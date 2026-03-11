@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Sparkles } from "lucide-react";
+import { Sparkles, BookOpen } from "lucide-react";
 import { useGameStore } from "@/stores/gameStore";
 import { StreakBadge } from "@/components/ui/StreakBadge";
 import { LessonNode } from "@/components/gamification/LessonNode";
@@ -13,52 +13,55 @@ import { LessonStatus } from "@/types";
 import world1 from "@/content/worlds/world-1.json";
 import world2 from "@/content/worlds/world-2.json";
 import type { WorldContent } from "@/types";
+import { getSupabase } from "@/lib/supabase";
 
-const worlds = [world1, world2] as WorldContent[];
+const worlds = [world1, world2] as unknown as WorldContent[];
 
-// Decorative icons sprinkled between nodes
 const decoIcons = ["🪙", "💰", "📊", "📈", "💡", "🏦", "💳", "📉"];
-
-// Zigzag pattern: positions as percentage offset from center
-// left, center, right, center, left ...
 const zigzagOffsets = [-35, 0, 35, 0];
 
 function getZigzagOffset(index: number): number {
   return zigzagOffsets[index % zigzagOffsets.length];
 }
 
-/**
- * Mock progress: first lesson available, rest locked.
- * In production this would come from the user's UserProgress data.
- */
-function getMockLessonStatuses(worldIndex: number) {
-  const statuses = new Map<string, { status: LessonStatus; score: number }>();
+type ProgressMap = Map<string, { status: LessonStatus; score: number; theoryCompleted: boolean }>;
 
-  if (worldIndex === 0) {
-    // World 1: first 2 lessons completed, 3rd available, rest locked
-    const allLessons: string[] = [];
-    worlds[0].units.forEach((u) =>
-      u.lessons.forEach((l) => allLessons.push(l.id))
-    );
+function buildProgressMap(
+  progressData: Array<{ lessonId: string; completed: boolean; score: number; theoryCompleted: boolean }>,
+  worldIndex: number
+): ProgressMap {
+  const statuses: ProgressMap = new Map();
 
-    allLessons.forEach((id, i) => {
-      if (i === 0) statuses.set(id, { status: LessonStatus.COMPLETED, score: 100 });
-      else if (i === 1) statuses.set(id, { status: LessonStatus.COMPLETED, score: 80 });
-      else if (i === 2) statuses.set(id, { status: LessonStatus.AVAILABLE, score: 0 });
-      else statuses.set(id, { status: LessonStatus.LOCKED, score: 0 });
+  // Flatten all lessons for the world
+  const allLessons: string[] = [];
+  worlds[worldIndex]?.units.forEach((u) =>
+    u.lessons.forEach((l) => allLessons.push(l.id))
+  );
+
+  // Build a set of completed lesson IDs
+  const completedIds = new Set(
+    progressData.filter((p) => p.completed).map((p) => p.lessonId)
+  );
+  const progressById = new Map(progressData.map((p) => [p.lessonId, p]));
+
+  allLessons.forEach((id, i) => {
+    const p = progressById.get(id);
+    let status: LessonStatus;
+
+    if (p?.completed) {
+      status = LessonStatus.COMPLETED;
+    } else if (i === 0 || completedIds.has(allLessons[i - 1])) {
+      status = LessonStatus.AVAILABLE;
+    } else {
+      status = LessonStatus.LOCKED;
+    }
+
+    statuses.set(id, {
+      status,
+      score: p?.score ?? 0,
+      theoryCompleted: p?.theoryCompleted ?? false,
     });
-  } else {
-    // Other worlds: first lesson available, rest locked
-    const allLessons: string[] = [];
-    worlds[worldIndex]?.units.forEach((u) =>
-      u.lessons.forEach((l) => allLessons.push(l.id))
-    );
-
-    allLessons.forEach((id, i) => {
-      if (i === 0) statuses.set(id, { status: LessonStatus.AVAILABLE, score: 0 });
-      else statuses.set(id, { status: LessonStatus.LOCKED, score: 0 });
-    });
-  }
+  });
 
   return statuses;
 }
@@ -67,13 +70,35 @@ export default function LearnPage() {
   const router = useRouter();
   const { xp, streak, streakData } = useGameStore();
   const [activeWorldId, setActiveWorldId] = useState(worlds[0].id);
+  const [progressData, setProgressData] = useState<Array<{ lessonId: string; completed: boolean; score: number; theoryCompleted: boolean }>>([]);
+  const [userId, setUserId] = useState<string | null>(null);
 
   const activeWorldIndex = worlds.findIndex((w) => w.id === activeWorldId);
   const activeWorld = worlds[activeWorldIndex];
 
+  // Load real progress from DB
+  useEffect(() => {
+    async function loadProgress() {
+      const { data: { session } } = await getSupabase().auth.getSession();
+      if (!session?.user?.id) return;
+      setUserId(session.user.id);
+
+      try {
+        const res = await fetch(`/api/progress?userId=${session.user.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setProgressData(data);
+        }
+      } catch {
+        // use empty progress
+      }
+    }
+    loadProgress();
+  }, []);
+
   const lessonStatuses = useMemo(
-    () => getMockLessonStatuses(activeWorldIndex),
-    [activeWorldIndex]
+    () => buildProgressMap(progressData, activeWorldIndex),
+    [progressData, activeWorldIndex]
   );
 
   const worldTabs = worlds.map((w, i) => ({
@@ -81,10 +106,21 @@ export default function LearnPage() {
     title: w.title,
     icon: w.icon,
     color: w.color,
-    isLocked: i > 1, // Lock worlds beyond the first two
+    isLocked: false, // unlock all worlds
   }));
 
-  // Flatten all lessons in order for the zigzag layout
+  const handleLessonClick = (lessonId: string) => {
+    const statusData = lessonStatuses.get(lessonId);
+    if (!statusData || statusData.status === LessonStatus.LOCKED) return;
+
+    // If theory not completed yet, go to theory first
+    if (!statusData.theoryCompleted) {
+      router.push(`/lesson/${lessonId}/theory`);
+    } else {
+      router.push(`/lesson/${lessonId}`);
+    }
+  };
+
   let globalLessonIndex = 0;
 
   return (
@@ -92,7 +128,6 @@ export default function LearnPage() {
       {/* Sticky header */}
       <div className="sticky top-0 z-40 border-b border-gray-100 bg-white/90 backdrop-blur-sm">
         <div className="mx-auto max-w-2xl px-4 py-3">
-          {/* Stats row */}
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1 text-sm font-bold text-primary">
@@ -104,9 +139,14 @@ export default function LearnPage() {
                 isActiveToday={streakData.isActiveToday}
               />
             </div>
+            {userId && (
+              <div className="flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600">
+                <BookOpen className="h-3 w-3" />
+                Progreso guardado
+              </div>
+            )}
           </div>
 
-          {/* World selector */}
           <WorldSelector
             worlds={worldTabs}
             activeWorldId={activeWorldId}
@@ -143,7 +183,6 @@ export default function LearnPage() {
             transition={{ delay: unitIndex * 0.1 }}
             className="mt-8"
           >
-            {/* Unit title banner */}
             <div className="mb-6 flex items-center gap-3">
               <div className="h-px flex-1 bg-gray-200" />
               <span className="shrink-0 rounded-full bg-gray-100 px-4 py-1.5 text-xs font-bold uppercase tracking-wider text-gray-500">
@@ -152,15 +191,14 @@ export default function LearnPage() {
               <div className="h-px flex-1 bg-gray-200" />
             </div>
 
-            {/* Lesson nodes with zigzag path */}
             <div className="flex flex-col items-center">
               {unit.lessons.map((lesson, lessonIndex) => {
                 const currentGlobalIndex = globalLessonIndex++;
                 const offset = getZigzagOffset(currentGlobalIndex);
                 const statusData = lessonStatuses.get(lesson.id);
                 const status = statusData?.status ?? LessonStatus.LOCKED;
+                const theoryCompleted = statusData?.theoryCompleted ?? false;
 
-                // Previous lesson status for connector
                 const isFirst = lessonIndex === 0 && unitIndex === 0;
                 let prevStatus = LessonStatus.LOCKED;
                 if (!isFirst) {
@@ -168,7 +206,6 @@ export default function LearnPage() {
                     const prevId = unit.lessons[lessonIndex - 1].id;
                     prevStatus = lessonStatuses.get(prevId)?.status ?? LessonStatus.LOCKED;
                   } else {
-                    // First lesson of this unit — previous is last lesson of prev unit
                     const prevUnit = activeWorld.units[unitIndex - 1];
                     if (prevUnit) {
                       const prevId = prevUnit.lessons[prevUnit.lessons.length - 1].id;
@@ -177,13 +214,11 @@ export default function LearnPage() {
                   }
                 }
 
-                // Decorative icon between some nodes
                 const showDeco = currentGlobalIndex > 0 && currentGlobalIndex % 3 === 0;
                 const decoIcon = decoIcons[currentGlobalIndex % decoIcons.length];
 
                 return (
                   <div key={lesson.id} className="flex w-full flex-col items-center">
-                    {/* Connector from previous node */}
                     {!isFirst && (
                       <PathConnector
                         fromStatus={prevStatus}
@@ -191,7 +226,6 @@ export default function LearnPage() {
                       />
                     )}
 
-                    {/* Decorative icon */}
                     {showDeco && (
                       <motion.div
                         initial={{ opacity: 0, scale: 0 }}
@@ -203,20 +237,24 @@ export default function LearnPage() {
                       </motion.div>
                     )}
 
-                    {/* Node with zigzag offset */}
                     <motion.div
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ delay: currentGlobalIndex * 0.06 }}
-                      style={{
-                        transform: `translateX(${offset}px)`,
-                      }}
+                      style={{ transform: `translateX(${offset}px)` }}
+                      className="relative"
                     >
+                      {/* Theory badge */}
+                      {status !== LessonStatus.LOCKED && !theoryCompleted && (
+                        <div className="absolute -top-2 -right-2 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-blue-500 text-xs text-white shadow">
+                          📖
+                        </div>
+                      )}
                       <LessonNode
                         title={lesson.title}
                         status={status}
                         index={currentGlobalIndex}
-                        onClick={() => router.push(`/lesson/${lesson.id}`)}
+                        onClick={() => handleLessonClick(lesson.id)}
                       />
                     </motion.div>
                   </div>
@@ -226,7 +264,6 @@ export default function LearnPage() {
           </motion.section>
         ))}
 
-        {/* End of path marker */}
         <div className="mt-8 flex flex-col items-center gap-2">
           <div className="flex h-10 items-center justify-center">
             <div className="h-full border-l-[3px] border-dashed border-gray-300" />

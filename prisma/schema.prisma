@@ -13,6 +13,7 @@ model User {
   email        String    @unique
   name         String?
   avatarUrl    String?   @map("avatar_url")
+  avatar       String    @default("🐻") @map("avatar_emoji")
   xp           Int       @default(0)
   streak       Int       @default(0)
   lives        Int       @default(5)
@@ -20,7 +21,9 @@ model User {
   lastActiveAt DateTime? @map("last_active_at")
   createdAt    DateTime  @default(now()) @map("created_at")
 
-  progress UserProgress[]
+  progress     UserProgress[]
+  wrongAnswers UserWrongAnswer[]
+  testSessions TestSession[]
   @@map("users")
 }
 
@@ -97,16 +100,47 @@ model ExerciseOption {
 // ─── Progress ────────────────────────────────────────────
 
 model UserProgress {
-  id        String   @id @default(uuid())
-  userId    String   @map("user_id")
-  lessonId  String   @map("lesson_id")
-  completed Boolean  @default(false)
-  score     Int      @default(0)
-  createdAt DateTime @default(now()) @map("created_at")
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  lessonId        String   @map("lesson_id")
+  completed       Boolean  @default(false)
+  score           Int      @default(0)
+  bestScore       Int      @default(0) @map("best_score")
+  timesAttempted  Int      @default(0) @map("times_attempted")
+  theoryCompleted Boolean  @default(false) @map("theory_completed")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
   @@unique([userId, lessonId])
   @@map("user_progress")
+}
+
+model UserWrongAnswer {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  exerciseId String   @map("exercise_id")
+  lessonId   String   @map("lesson_id")
+  timesWrong Int      @default(1) @map("times_wrong")
+  lastSeenAt DateTime @default(now()) @map("last_seen_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, exerciseId])
+  @@map("user_wrong_answers")
+}
+
+model TestSession {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  lessonId   String   @map("lesson_id")
+  score      Int      @default(0)
+  totalQ     Int      @default(10) @map("total_questions")
+  completed  Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("test_sessions")
 }

@@ -20,8 +20,10 @@ import { playClick } from "@/lib/sounds";
 import world1 from "@/content/worlds/world-1.json";
 import world2 from "@/content/worlds/world-2.json";
 import type { WorldContent, LessonWithExercises, Exercise } from "@/types";
+import { selectExercises, type WrongAnswerRecord } from "@/utils/spaced-repetition";
+import { getSupabase } from "@/lib/supabase";
 
-const worlds = [world1, world2] as WorldContent[];
+const worlds = [world1, world2] as unknown as WorldContent[];
 
 function findLesson(id: string): LessonWithExercises | null {
   for (const world of worlds) {
@@ -77,7 +79,12 @@ export default function LessonPage() {
   const params = useParams();
   const router = useRouter();
   const lessonId = params.id as string;
-  const lesson = useMemo(() => findLesson(lessonId), [lessonId]);
+  const rawLesson = useMemo(() => findLesson(lessonId), [lessonId]);
+
+  const [userId, setUserId] = useState<string | null>(null);
+  const [wrongAnswers, setWrongAnswers] = useState<WrongAnswerRecord[]>([]);
+  const [selectedExercises, setSelectedExercises] = useState<Exercise[]>([]);
+  const [ready, setReady] = useState(false);
 
   const {
     currentExerciseIndex,
@@ -95,19 +102,63 @@ export default function LessonPage() {
     currentLesson,
   } = useLessonStore();
 
-  const addXP = useGameStore((s) => s.addXP);
+  const { addXP, checkAndUpdateStreak } = useGameStore();
   const [showExitModal, setShowExitModal] = useState(false);
 
+  // Load user + wrong answers for spaced repetition
   useEffect(() => {
-    if (lesson) startLesson(lesson);
-  }, [lesson, startLesson]);
+    async function init() {
+      const { data: { session } } = await getSupabase().auth.getSession();
+      const uid = session?.user?.id ?? null;
+      setUserId(uid);
+
+      let wrongs: WrongAnswerRecord[] = [];
+      if (uid && rawLesson) {
+        try {
+          const res = await fetch(`/api/wrong-answers?userId=${uid}&lessonId=${rawLesson.id}`);
+          if (res.ok) wrongs = await res.json();
+        } catch {
+          // ignore
+        }
+      }
+      setWrongAnswers(wrongs);
+
+      if (rawLesson) {
+        const pool = rawLesson.exercises;
+        const chosen = selectExercises(pool, wrongs, 10);
+        setSelectedExercises(chosen);
+
+        const lessonToStart: LessonWithExercises = { ...rawLesson, exercises: chosen };
+        startLesson(lessonToStart);
+      }
+      setReady(true);
+    }
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lessonId]);
 
   // Award XP on successful completion
   useEffect(() => {
-    if (isComplete && heartsLeft > 0 && xpEarned > 0) {
-      addXP(xpEarned, "lesson_complete");
+    if (!isComplete || heartsLeft <= 0 || xpEarned <= 0) return;
+
+    addXP(xpEarned, "lesson_complete");
+    checkAndUpdateStreak();
+
+    // Persist to DB
+    if (userId && rawLesson) {
+      fetch("/api/progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId,
+          lessonId: rawLesson.id,
+          xpEarned,
+          mistakes,
+        }),
+      }).catch(() => {});
     }
-  }, [isComplete, heartsLeft, xpEarned, addXP]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isComplete]);
 
   const exercise = getCurrentExercise();
   const totalExercises = currentLesson?.exercises.length ?? 0;
@@ -119,8 +170,21 @@ export default function LessonPage() {
   const handleAnswer = useCallback(
     (answer: string, isCorrect: boolean) => {
       submitAnswer(answer, isCorrect);
+
+      // Track wrong answers for spaced repetition
+      if (!isCorrect && userId && exercise) {
+        fetch("/api/wrong-answers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            exerciseId: exercise.id,
+            lessonId: lessonId,
+          }),
+        }).catch(() => {});
+      }
     },
-    [submitAnswer]
+    [submitAnswer, userId, exercise, lessonId]
   );
 
   const handleContinue = useCallback(() => {
@@ -132,22 +196,23 @@ export default function LessonPage() {
     resetLesson();
   }, [resetLesson]);
 
-  // Not found
-  if (!lesson) {
+  if (!ready || !rawLesson) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
           <p className="text-6xl">📚</p>
           <p className="mt-4 text-lg font-medium text-gray-500">
-            Leccion no encontrada
+            {!rawLesson && ready ? "Leccion no encontrada" : "Cargando..."}
           </p>
-          <Button
-            variant="ghost"
-            className="mt-4"
-            onClick={() => router.push("/learn")}
-          >
-            Volver al mapa
-          </Button>
+          {!rawLesson && ready && (
+            <Button
+              variant="ghost"
+              className="mt-4"
+              onClick={() => router.push("/learn")}
+            >
+              Volver al mapa
+            </Button>
+          )}
         </div>
       </div>
     );
