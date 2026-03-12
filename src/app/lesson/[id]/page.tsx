@@ -83,7 +83,6 @@ export default function LessonPage() {
 
   const [userId, setUserId] = useState<string | null>(null);
   const [wrongAnswers, setWrongAnswers] = useState<WrongAnswerRecord[]>([]);
-  const [selectedExercises, setSelectedExercises] = useState<Exercise[]>([]);
   const [ready, setReady] = useState(false);
 
   const {
@@ -126,7 +125,6 @@ export default function LessonPage() {
       if (rawLesson) {
         const pool = rawLesson.exercises;
         const chosen = selectExercises(pool, wrongs, 10);
-        setSelectedExercises(chosen);
 
         const lessonToStart: LessonWithExercises = { ...rawLesson, exercises: chosen };
         startLesson(lessonToStart);

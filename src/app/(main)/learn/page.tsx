@@ -101,7 +101,7 @@ export default function LearnPage() {
     [progressData, activeWorldIndex]
   );
 
-  const worldTabs = worlds.map((w, i) => ({
+  const worldTabs = worlds.map((w) => ({
     id: w.id,
     title: w.title,
     icon: w.icon,
