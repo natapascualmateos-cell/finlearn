@@ -82,7 +82,6 @@ export default function LessonPage() {
   const rawLesson = useMemo(() => findLesson(lessonId), [lessonId]);
 
   const [userId, setUserId] = useState<string | null>(null);
-  const [wrongAnswers, setWrongAnswers] = useState<WrongAnswerRecord[]>([]);
   const [ready, setReady] = useState(false);
 
   const {
@@ -120,8 +119,6 @@ export default function LessonPage() {
           // ignore
         }
       }
-      setWrongAnswers(wrongs);
-
       if (rawLesson) {
         const pool = rawLesson.exercises;
         const chosen = selectExercises(pool, wrongs, 10);
